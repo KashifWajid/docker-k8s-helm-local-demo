@@ -1,0 +1,498 @@
+# Docker → Docker Compose → Local Kubernetes (kind/minikube) → Helm
+
+**Goal:** Build a tiny demo web app, containerize it with Docker, run it with `docker run`, run with `docker compose`, deploy to a local Kubernetes cluster (I'll show both `kind` and `minikube` options), and finally package and deploy it with Helm.
+
+This tutorial uses a simple **Node.js + Express** app (single file) and shows every file and command you need. Copy/paste the files and commands into a project folder and run them.
+
+---
+
+## Prerequisites
+
+* Git (optional)
+* Docker installed and running (Docker Desktop or Docker Engine).
+* `docker-compose` (Docker Desktop includes it; or `docker compose` plugin)
+* `kubectl` installed
+* Either `kind` (Kubernetes in Docker) or `minikube` for a local k8s cluster
+* `helm` installed (v3+)
+
+If you want a minimal setup choose `kind` (runs k8s in Docker). If you prefer a VM-based cluster, use `minikube`. The commands below include both options where they differ.
+
+---
+
+## Project structure
+
+```
+demo-app/
+├─ app/
+│  ├─ package.json
+│  └─ index.js
+├─ Dockerfile
+├─ docker-compose.yml
+├─ k8s/
+│  ├─ deployment.yaml
+│  └─ service.yaml
+├─ helm-chart/
+│  └─ demo-app/
+│     ├─ Chart.yaml
+│     ├─ values.yaml
+│     └─ templates/
+│        ├─ deployment.yaml
+│        └─ service.yaml
+└─ README.md  (you are here)
+```
+
+---
+
+## 1) Create the demo app
+
+Create folder `demo-app/app` and add these files.
+
+### `app/package.json`
+
+```json
+{
+  "name": "demo-app",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}
+```
+
+### `app/index.js`
+
+```js
+const express = require('express');
+const app = express();
+const port = process.env.PORT || 3000;
+
+app.get('/', (req, res) => {
+  res.json({ message: 'Hello from demo-app!', pid: process.pid });
+});
+
+app.get('/health', (req, res) => {
+  res.status(200).send('ok');
+});
+
+app.listen(port, () => {
+  console.log(`demo-app listening on port ${port}`);
+});
+```
+
+Install dependencies locally (optional):
+
+```bash
+cd demo-app/app
+npm install
+cd ..
+```
+
+> You don't strictly need to run the app locally with `node` — this is mainly to test before containerizing.
+
+---
+
+## 2) Dockerize the app
+
+Create a `Dockerfile` in the project root (`demo-app/Dockerfile`):
+
+```Dockerfile
+# Use official Node image
+FROM node:18-alpine
+
+WORKDIR /usr/src/app
+
+# Copy package.json + package-lock (if present) first to leverage layer caching
+COPY app/package.json ./
+
+# Install dependencies
+RUN npm install --production
+
+# Copy app source
+COPY app/ ./
+
+# Default port
+ENV PORT=3000
+
+EXPOSE 3000
+
+CMD ["npm", "start"]
+```
+
+### Build the image
+
+From project root:
+
+```bash
+docker build -t demo-app:local .
+```
+
+### Run the image with Docker
+
+```bash
+# map container port 3000 to host 3000
+docker run --rm -p 3000:3000 --name demo-app-demo demo-app:local
+```
+
+Then visit `http://localhost:3000/` — you should see the JSON message.
+
+To run detached:
+
+```bash
+docker run -d --rm -p 3000:3000 --name demo-app-demo demo-app:local
+```
+
+Stop it:
+
+```bash
+docker stop demo-app-demo
+```
+
+---
+
+## 3) Docker Compose
+
+Create `docker-compose.yml` in project root:
+
+```yaml
+version: '3.8'
+services:
+  demo:
+    image: demo-app:local
+    build: .
+    ports:
+      - '3000:3000'
+    restart: unless-stopped
+    environment:
+      - PORT=3000
+```
+
+### Start with Compose
+
+```bash
+# build and start
+docker compose up --build
+# (or older syntax) docker-compose up --build
+```
+
+Visit `http://localhost:3000/`. To stop:
+
+```bash
+docker compose down
+```
+
+Notes:
+
+* `docker compose` will rebuild the image if the `build:` context changed.
+* Useful for multi-service demos; you can add a second service (e.g., redis) to demonstrate linking.
+
+---
+
+## 4) Local Kubernetes — Option A: kind (recommended for Docker users)
+
+### Install and create cluster
+
+```bash
+# install kind if not installed (mac/linux example using Go or brew)
+# brew install kind           # macOS
+# or use release binary from kind.sigs.k8s.io
+
+# create cluster (simple)
+kind create cluster --name demo-cluster
+
+# make sure kubectl uses the cluster
+kubectl cluster-info --context kind-demo-cluster
+```
+
+### Create Kubernetes manifests
+
+`k8s/deployment.yaml`:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: demo-app
+  template:
+    metadata:
+      labels:
+        app: demo-app
+    spec:
+      containers:
+      - name: demo-app
+        image: demo-app:local
+        ports:
+        - containerPort: 3000
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+```
+
+`k8s/service.yaml`:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-app-service
+spec:
+  type: NodePort
+  selector:
+    app: demo-app
+  ports:
+    - port: 3000
+      targetPort: 3000
+      nodePort: 30080
+```
+
+### Important: make image available to cluster
+
+* With **kind**, you can use the same local image if you load it into the kind nodes:
+
+```bash
+# build image locally first
+docker build -t demo-app:local .
+
+# load into kind nodes
+kind load docker-image demo-app:local --name demo-cluster
+```
+
+* With **minikube**, you can either use `minikube image load demo-app:local` or build inside minikube's docker daemon by running `eval $(minikube -p minikube docker-env)` before `docker build`.
+
+### Apply manifests
+
+```bash
+kubectl apply -f k8s/deployment.yaml
+kubectl apply -f k8s/service.yaml
+
+# check pods
+kubectl get pods -l app=demo-app
+kubectl get svc demo-app-service
+```
+
+### Access the app
+
+* If using `kind`, NodePort `30080` is accessible on your host because kind maps ports via Docker network. Visit `http://localhost:30080/`.
+* If using `minikube`, run `minikube service demo-app-service --url` to get the URL.
+
+You can also port-forward the service:
+
+```bash
+kubectl port-forward svc/demo-app-service 3000:3000
+# then visit http://localhost:3000
+```
+
+### Cleanup
+
+```bash
+kubectl delete -f k8s/deployment.yaml -f k8s/service.yaml
+kind delete cluster --name demo-cluster
+```
+
+---
+
+## 4b) Local Kubernetes — Option B: minikube
+
+Install `minikube`, start cluster:
+
+```bash
+minikube start --driver=docker
+
+# if you prefer building and loading into minikube's docker environment:
+eval $(minikube -p minikube docker-env)
+docker build -t demo-app:local .
+# no need to load separately if built in minikube's docker
+```
+
+Apply the same `k8s/*.yaml` files (you might change NodePort or use `LoadBalancer` with `minikube tunnel`).
+
+To get a URL:
+
+```bash
+minikube service demo-app-service --url
+```
+
+To cleanup:
+
+```bash
+minikube stop
+minikube delete
+```
+
+---
+
+## 5) Helm — package and deploy
+
+Create a Helm chart scaffold under `helm-chart/demo-app`.
+
+### `helm-chart/demo-app/Chart.yaml`
+
+```yaml
+apiVersion: v2
+name: demo-app
+description: A demo app chart
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+```
+
+### `helm-chart/demo-app/values.yaml`
+
+```yaml
+replicaCount: 2
+image:
+  repository: demo-app
+  tag: local
+  pullPolicy: IfNotPresent
+service:
+  type: NodePort
+  port: 3000
+  nodePort: 30080
+resources: {}
+
+# Add more values as you need (env, ingress, etc.)
+```
+
+### `helm-chart/demo-app/templates/deployment.yaml`
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "demo-app.fullname" . }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ include "demo-app.name" . }}
+  template:
+    metadata:
+      labels:
+        app: {{ include "demo-app.name" . }}
+    spec:
+      containers:
+        - name: demo-app
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          ports:
+            - containerPort: 3000
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+```
+
+> Add a `_helpers.tpl` if you want nicer `include` helpers; for this demo the templates use the simple `include` references. If the include helpers aren't defined, you can simplify to static names.
+
+### `helm-chart/demo-app/templates/service.yaml`
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "demo-app.fullname" . }}-svc
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    app: {{ include "demo-app.name" . }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: 3000
+      nodePort: {{ .Values.service.nodePort }}
+```
+
+### Install the chart
+
+Before installing, ensure the image is available to the cluster (see kind/minikube notes above).
+
+```bash
+# from project root
+helm install demo-app-release helm-chart/demo-app --wait
+
+# check
+kubectl get all -l app=demo-app
+```
+
+To upgrade (after changing values or templates):
+
+```bash
+helm upgrade demo-app-release helm-chart/demo-app
+```
+
+To uninstall:
+
+```bash
+helm uninstall demo-app-release
+```
+
+---
+
+## Helpful tips and troubleshooting
+
+* If `kubectl get pods` shows `ImagePullBackOff`, it means Kubernetes cannot pull the image. For local clusters, either load the local image into the cluster (kind) or build in the cluster's docker (minikube). Alternatively push to Docker Hub and reference `yourdockerhubusername/demo-app:tag`.
+
+* Use `kubectl logs <pod>` to inspect container logs.
+
+* Use `kubectl describe pod <pod>` for events and error messages.
+
+* For rapid iteration: change app code, rebuild image (`docker build -t demo-app:local .`), then `kind load docker-image demo-app:local --name demo-cluster`, and `kubectl rollout restart deployment/demo-app` to pick up the new image.
+
+---
+
+## Quick command summary (copy/paste)
+
+```bash
+# build and run with docker
+docker build -t demo-app:local .
+docker run --rm -p 3000:3000 demo-app:local
+
+# with compose
+docker compose up --build
+
+# kind cluster
+kind create cluster --name demo-cluster
+kind load docker-image demo-app:local --name demo-cluster
+kubectl apply -f k8s/deployment.yaml -f k8s/service.yaml
+kubectl port-forward svc/demo-app-service 3000:3000
+
+# helm
+helm install demo-app-release helm-chart/demo-app
+helm upgrade demo-app-release helm-chart/demo-app
+helm uninstall demo-app-release
+
+# cleanup kind
+kubectl delete -f k8s/deployment.yaml -f k8s/service.yaml
+kind delete cluster --name demo-cluster
+```
+
+---
+
+## Next steps / improvements you can try
+
+* Add environment-specific `values.yaml` for Helm (dev/prod).
+* Configure an Ingress resource and test with `minikube tunnel` or a local ingress controller.
+* Add CI to build, push images to Docker Hub and run `helm upgrade` in CI.
+* Add readinessProbe and resource limits to the Kubernetes deployment.
+* Extend app to talk to a DB service (add Postgres service via docker-compose / k8s manifest / helm chart).
+
+---
+
+If you'd like, I can also:
+
+* Provide ready-to-copy files you can download.
+* Replace Node.js app with Python (Flask) — whichever you prefer.
+* Show how to push the image to Docker Hub and change manifests to use the remote image.
+
+Tell me which of those you'd like and I will add it directly into this project.
