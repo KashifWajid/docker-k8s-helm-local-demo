@@ -1,6 +1,6 @@
 # Docker → Docker Compose → Local Kubernetes (kind/minikube) → Helm
 
-**Goal:** Build a tiny demo web app, containerize it with Docker, run it with `docker run`, run with `docker compose`, deploy to a local Kubernetes cluster (I'll show both `kind` and `minikube` options), and finally package and deploy it with Helm.
+**Goal:** Build a tiny demo web app, containerize it with Docker, run it with `docker run`, run with `docker compose`, deploy to a local Kubernetes cluster (I'll show both `kind`), and finally package and deploy it with Helm.
 
 This tutorial uses a simple **Node.js + Express** app (single file) and shows every file and command you need. Copy/paste the files and commands into a project folder and run them.
 
@@ -12,10 +12,7 @@ This tutorial uses a simple **Node.js + Express** app (single file) and shows ev
 * Docker installed and running (Docker Desktop or Docker Engine).
 * `docker-compose` (Docker Desktop includes it; or `docker compose` plugin)
 * `kubectl` installed
-* Either `kind` (Kubernetes in Docker) or `minikube` for a local k8s cluster
 * `helm` installed (v3+)
-
-If you want a minimal setup choose `kind` (runs k8s in Docker). If you prefer a VM-based cluster, use `minikube`. The commands below include both options where they differ.
 
 ---
 
@@ -28,6 +25,7 @@ demo-app/
 │  └─ index.js
 ├─ Dockerfile
 ├─ docker-compose.yml
+├─ kind-config.yaml
 ├─ k8s/
 │  ├─ deployment.yaml
 │  └─ service.yaml
@@ -196,15 +194,27 @@ Notes:
 ### Install and create cluster
 
 ```bash
-# install kind if not installed (mac/linux example using Go or brew)
-# brew install kind           # macOS
-# or use release binary from kind.sigs.k8s.io
+
+### Create kind  manifests
+
+# kind-config.yaml
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 30080
+        hostPort: 8080
+        protocol: TCP
 
 # create cluster (simple)
-kind create cluster --name demo-cluster
+kind create cluster --name demo-cluster --config .\kind-config.yaml
 
 # make sure kubectl uses the cluster
 kubectl cluster-info --context kind-demo-cluster
+
+#make sure the docker image is available to the kind cluster
+kind load docker-image docker-k8s-helm-demo:local --name demo-cluster
 ```
 
 ### Create Kubernetes manifests
@@ -215,26 +225,27 @@ kubectl cluster-info --context kind-demo-cluster
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: demo-app
+  name: demo-k8s-app
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app: demo-app
+      app: demo-k8s-app
   template:
     metadata:
       labels:
-        app: demo-app
+        app: demo-k8s-app
     spec:
       containers:
-      - name: demo-app
-        image: demo-app:local
+      - name: demo-k8s-app
+        image: docker-k8s-helm-demo:local
+        imagePullPolicy: Never
         ports:
-        - containerPort: 3000
+        - containerPort: 6969
         livenessProbe:
           httpGet:
             path: /health
-            port: 3000
+            port: 6969
           initialDelaySeconds: 5
           periodSeconds: 10
 ```
@@ -245,30 +256,16 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: demo-app-service
+  name: demo-k8s-app-service
 spec:
   type: NodePort
   selector:
-    app: demo-app
+    app: demo-k8s-app
   ports:
-    - port: 3000
-      targetPort: 3000
+    - port: 6969
+      targetPort: 6969
       nodePort: 30080
 ```
-
-### Important: make image available to cluster
-
-* With **kind**, you can use the same local image if you load it into the kind nodes:
-
-```bash
-# build image locally first
-docker build -t demo-app:local .
-
-# load into kind nodes
-kind load docker-image demo-app:local --name demo-cluster
-```
-
-* With **minikube**, you can either use `minikube image load demo-app:local` or build inside minikube's docker daemon by running `eval $(minikube -p minikube docker-env)` before `docker build`.
 
 ### Apply manifests
 
@@ -283,15 +280,7 @@ kubectl get svc demo-app-service
 
 ### Access the app
 
-* If using `kind`, NodePort `30080` is accessible on your host because kind maps ports via Docker network. Visit `http://localhost:30080/`.
-* If using `minikube`, run `minikube service demo-app-service --url` to get the URL.
-
-You can also port-forward the service:
-
-```bash
-kubectl port-forward svc/demo-app-service 3000:3000
-# then visit http://localhost:3000
-```
+* If using `kind`. Visit `http://localhost:8080/`.
 
 ### Cleanup
 
@@ -299,37 +288,6 @@ kubectl port-forward svc/demo-app-service 3000:3000
 kubectl delete -f k8s/deployment.yaml -f k8s/service.yaml
 kind delete cluster --name demo-cluster
 ```
-
----
-
-## 4b) Local Kubernetes — Option B: minikube
-
-Install `minikube`, start cluster:
-
-```bash
-minikube start --driver=docker
-
-# if you prefer building and loading into minikube's docker environment:
-eval $(minikube -p minikube docker-env)
-docker build -t demo-app:local .
-# no need to load separately if built in minikube's docker
-```
-
-Apply the same `k8s/*.yaml` files (you might change NodePort or use `LoadBalancer` with `minikube tunnel`).
-
-To get a URL:
-
-```bash
-minikube service demo-app-service --url
-```
-
-To cleanup:
-
-```bash
-minikube stop
-minikube delete
-```
-
 ---
 
 ## 5) Helm — package and deploy
@@ -476,23 +434,3 @@ helm uninstall demo-app-release
 kubectl delete -f k8s/deployment.yaml -f k8s/service.yaml
 kind delete cluster --name demo-cluster
 ```
-
----
-
-## Next steps / improvements you can try
-
-* Add environment-specific `values.yaml` for Helm (dev/prod).
-* Configure an Ingress resource and test with `minikube tunnel` or a local ingress controller.
-* Add CI to build, push images to Docker Hub and run `helm upgrade` in CI.
-* Add readinessProbe and resource limits to the Kubernetes deployment.
-* Extend app to talk to a DB service (add Postgres service via docker-compose / k8s manifest / helm chart).
-
----
-
-If you'd like, I can also:
-
-* Provide ready-to-copy files you can download.
-* Replace Node.js app with Python (Flask) — whichever you prefer.
-* Show how to push the image to Docker Hub and change manifests to use the remote image.
-
-Tell me which of those you'd like and I will add it directly into this project.

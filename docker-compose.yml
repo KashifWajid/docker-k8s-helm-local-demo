@@ -1,0 +1,10 @@
+version: '3.8'
+services:
+  demo:
+    image: docker-k8s-helm-demo:local
+    build: .
+    ports:
+      - '6969:6969'
+    restart: unless-stopped
+    environment:
+      - PORT=6969

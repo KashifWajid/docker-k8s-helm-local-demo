@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-k8s-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: demo-k8s-app
+  template:
+    metadata:
+      labels:
+        app: demo-k8s-app
+    spec:
+      containers:
+      - name: demo-k8s-app
+        image: docker-k8s-helm-demo:local
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 6969
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 6969
+          initialDelaySeconds: 5
+          periodSeconds: 10
