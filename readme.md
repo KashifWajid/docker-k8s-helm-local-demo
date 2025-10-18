@@ -11,6 +11,7 @@ This tutorial uses a simple **Node.js + Express** app (single file) and shows ev
 * Git (optional)
 * Docker installed and running (Docker Desktop or Docker Engine).
 * `docker-compose` (Docker Desktop includes it; or `docker compose` plugin)
+* `kind` installed
 * `kubectl` installed
 * `helm` installed (v3+)
 
@@ -113,9 +114,9 @@ RUN npm install --production
 COPY app/ ./
 
 # Default port
-ENV PORT=3000
+ENV PORT=6969
 
-EXPOSE 3000
+EXPOSE 6969
 
 CMD ["npm", "start"]
 ```
@@ -131,16 +132,16 @@ docker build -t demo-app:local .
 ### Run the image with Docker
 
 ```bash
-# map container port 3000 to host 3000
-docker run --rm -p 3000:3000 --name demo-app-demo demo-app:local
+# map container port 6969 to host 6969
+docker run --rm -p 6969:6969 --name demo-app-demo demo-app:local
 ```
 
-Then visit `http://localhost:3000/` — you should see the JSON message.
+Then visit `http://localhost:6969/` — you should see the JSON message.
 
 To run detached:
 
 ```bash
-docker run -d --rm -p 3000:3000 --name demo-app-demo demo-app:local
+docker run -d --rm -p 6969:6969 --name demo-app-demo demo-app:local
 ```
 
 Stop it:
@@ -162,10 +163,10 @@ services:
     image: demo-app:local
     build: .
     ports:
-      - '3000:3000'
+      - '6969:6969'
     restart: unless-stopped
     environment:
-      - PORT=3000
+      - PORT=6969
 ```
 
 ### Start with Compose
@@ -176,7 +177,7 @@ docker compose up --build
 # (or older syntax) docker-compose up --build
 ```
 
-Visit `http://localhost:3000/`. To stop:
+Visit `http://localhost:6969/`. To stop:
 
 ```bash
 docker compose down
@@ -413,8 +414,8 @@ helm uninstall demo-app-release
 
 ```bash
 # build and run with docker
-docker build -t demo-app:local .
-docker run --rm -p 3000:3000 demo-app:local
+docker build -t docker-k8s-helm-demo:local .
+docker run --rm -p 6969:6969 docker-k8s-helm-demo:local
 
 # with compose
 docker compose up --build
@@ -423,7 +424,7 @@ docker compose up --build
 kind create cluster --name demo-cluster
 kind load docker-image demo-app:local --name demo-cluster
 kubectl apply -f k8s/deployment.yaml -f k8s/service.yaml
-kubectl port-forward svc/demo-app-service 3000:3000
+kubectl port-forward svc/demo-app-service 6969:6969
 
 # helm
 helm install demo-app-release helm-chart/demo-app
