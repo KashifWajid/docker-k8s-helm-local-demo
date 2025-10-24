@@ -212,7 +212,7 @@ nodes:
 kind create cluster --name demo-cluster --config .\kind-config.yaml
 
 # make sure kubectl uses the cluster
-kubectl cluster-info --context kind-demo-cluster
+kubectl cluster-info --context demo-cluster
 
 #make sure the docker image is available to the kind cluster
 kind load docker-image docker-k8s-helm-demo:local --name demo-cluster
@@ -316,7 +316,7 @@ image:
   pullPolicy: IfNotPresent
 service:
   type: NodePort
-  port: 3000
+  port: 6969
   nodePort: 30080
 resources: {}
 
@@ -329,28 +329,30 @@ resources: {}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "demo-app.fullname" . }}
+  name: demo-app
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
-      app: {{ include "demo-app.name" . }}
+      app: demo-app
   template:
     metadata:
       labels:
-        app: {{ include "demo-app.name" . }}
+        app: demo-app
     spec:
       containers:
         - name: demo-app
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
-            - containerPort: 3000
+            - containerPort: 6969
           livenessProbe:
             httpGet:
               path: /health
-              port: 3000
+              port: 6969
             initialDelaySeconds: 5
             periodSeconds: 10
+
 ```
 
 > Add a `_helpers.tpl` if you want nicer `include` helpers; for this demo the templates use the simple `include` references. If the include helpers aren't defined, you can simplify to static names.
@@ -361,15 +363,16 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "demo-app.fullname" . }}-svc
+  name: demo-app-svc
 spec:
   type: {{ .Values.service.type }}
   selector:
-    app: {{ include "demo-app.name" . }}
+    app: demo-app
   ports:
     - port: {{ .Values.service.port }}
-      targetPort: 3000
+      targetPort: 6969
       nodePort: {{ .Values.service.nodePort }}
+
 ```
 
 ### Install the chart

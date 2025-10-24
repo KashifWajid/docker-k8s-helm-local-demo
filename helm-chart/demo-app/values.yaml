@@ -1,0 +1,10 @@
+replicaCount: 2
+image:
+  repository: docker-k8s-helm-demo
+  tag: local
+  pullPolicy: IfNotPresent
+service:
+  type: NodePort
+  port: 6969
+  nodePort: 30080
+resources: {}
